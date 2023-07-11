@@ -4586,6 +4586,105 @@ public:
 } // namespace
 
 namespace {
+// Decompose `aten.masked_scatter` into `aten.flatten_using_ints` +
+// `aten.masked_select` + `aten.scatter.src` + `aten.view`
+class DecomposeAtenMaskedScatterOp
+    : public OpRewritePattern<AtenMaskedScatterOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenMaskedScatterOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MLIRContext *context = op.getContext();
+
+    Value input = op.getSelf();
+    auto inputType = input.getType().cast<BaseTensorType>();
+    auto mask = op.getMask();
+    auto maskType = mask.getType().cast<BaseTensorType>();
+    auto source = op.getSource();
+    auto sourceType = source.getType().cast<BaseTensorType>();
+
+    if (!inputType.hasSizes() || !maskType.hasSizes() ||
+        !sourceType.hasSizes()) {
+      return rewriter.notifyMatchFailure(op, "operands should have shape");
+    }
+
+    auto inputShape = inputType.getSizes();
+    auto sourceShape = sourceType.getSizes();
+    auto inputRank = inputShape.size();
+    int64_t inputTotalSize = 1;
+    int64_t sourceTotalSize = 1;
+    for (auto s : inputShape)
+      inputTotalSize *= s;
+    for (auto s : sourceShape)
+      sourceTotalSize *= s;
+
+    SmallVector<Value> inpuSizes;
+    for (unsigned i = 0; i < inputRank; i++) {
+      Value dim = rewriter.create<Torch::ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(i));
+      inpuSizes.push_back(
+          rewriter.create<Torch::AtenSizeIntOp>(loc, input, dim));
+    }
+
+    Value inputSizesValue = rewriter.create<Torch::PrimListConstructOp>(
+        loc, Torch::ListType::get(Torch::IntType::get(context)), inpuSizes);
+
+    auto newMaskType =
+        maskType.getWithSizesAndDtype(inputShape, maskType.getOptionalDtype());
+    mask = rewriter.create<Torch::AtenBroadcastToOp>(loc, newMaskType, mask,
+                                                     inputSizesValue);
+
+    auto flattenInputType = inputType.getWithSizesAndDtype(
+        {inputTotalSize}, inputType.getOptionalDtype());
+    auto flattenMaskType = maskType.getWithSizesAndDtype(
+        {inputTotalSize}, maskType.getOptionalDtype());
+    auto flattenSourceType = sourceType.getWithSizesAndDtype(
+        {sourceTotalSize}, sourceType.getOptionalDtype());
+
+    Value zero = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(0));
+    Value minusOne = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(-1));
+    Value flattenInput = rewriter.create<Torch::AtenFlattenUsingIntsOp>(
+        loc, flattenInputType, input, zero, minusOne);
+    Value flattenMask = rewriter.create<Torch::AtenFlattenUsingIntsOp>(
+        loc, flattenMaskType, mask, zero, minusOne);
+    Value flattenSource = rewriter.create<Torch::AtenFlattenUsingIntsOp>(
+        loc, flattenSourceType, source, zero, minusOne);
+
+    auto indexEnd = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(inputTotalSize));
+    auto indexDtypeValue = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(
+                 static_cast<int64_t>(torch_upstream::ScalarType::Long)));
+    auto none = rewriter.create<Torch::ConstantNoneOp>(loc);
+    auto indexType = maskType.getWithSizesAndDtype(
+        {inputTotalSize},
+        IntegerType::get(context, 64,
+                         IntegerType::SignednessSemantics::Signed));
+    Value indexValue = rewriter.create<Torch::AtenArangeOp>(
+        loc, indexType, indexEnd, indexDtypeValue, none, none, none);
+
+    ValueTensorType scatterIndiciesType = ValueTensorType::get(
+        context, {ShapedType::kDynamic},
+        IntegerType::get(context, 64,
+                         IntegerType::SignednessSemantics::Signed));
+    Value scatterIndicies = rewriter.create<Torch::AtenMaskedSelectOp>(
+        loc, scatterIndiciesType, indexValue, flattenMask);
+
+    Value scatterOutput = rewriter.create<Torch::AtenScatterSrcOp>(
+        loc, flattenInputType, flattenInput, zero, scatterIndicies,
+        flattenSource);
+
+    rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(
+        op, op.getType(), scatterOutput, inputSizesValue);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class DecomposeComplexOpsPass
     : public DecomposeComplexOpsBase<DecomposeComplexOpsPass> {
 private:
@@ -4754,6 +4853,7 @@ public:
     addPatternIfTargetOpIsIllegal<DecomposeAtenScalarTensor>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenScatterValueOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenSignOp>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAtenMaskedScatterOp>(patterns);
 
     GreedyRewriteConfig config;
     config.useTopDownTraversal = true;

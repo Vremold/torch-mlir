@@ -866,6 +866,30 @@ class ScatterSrcModule(torch.nn.Module):
 def ScatterSrcModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(10, 8, 6), tu.randint(2, 4, 3, high=4),
                    tu.rand(3, 4, 3))
+    
+# ==============================================================================
+
+class MaskedScatterStaticModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([10, 8, 6], torch.float32, True),
+        ([10, 8, 6], torch.bool, True),
+        ([10, 8, 6], torch.float32, True),
+    ])
+    def forward(self, input, mask, src):
+        return torch.ops.aten.masked_scatter(input, mask, src)
+
+
+@register_test_case(
+    module_factory=lambda: MaskedScatterStaticModule())
+def MaskedScatterModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(10, 8, 6), tu.randint(10, 8, 6, high=2, dtype=torch.bool),
+                   tu.rand(10, 8, 6))
 
 # ==============================================================================
 
