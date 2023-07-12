@@ -35,3 +35,8 @@ llvm-build/
 
 # C++ build artifacts
 compile_commands.json
+
+/*env/
+/My_*/
+/*.log
+/patches/
