@@ -216,8 +216,9 @@ Value promoteAndBroadcast(ConversionPatternRewriter &rewriter, Value input,
       do_bcast = true;
     } else {
       op->emitError("The size of tensor a (")
-          << inDim << ")" << "must match the size of tensor b (" << outDim
-          << ")" << "at non-singleton dimension " << inPos;
+          << inDim << ")"
+          << "must match the size of tensor b (" << outDim << ")"
+          << "at non-singleton dimension " << inPos;
     }
   }
   std::reverse(bcastDims.begin(), bcastDims.end());
@@ -395,9 +396,9 @@ getBroadcastResultShape(PatternRewriter &rewriter, Operation *op,
     //   return failure();
     // }
     bcastSizes.push_back(dimSize);
-    std::reverse(bcastSizes.begin(), bcastSizes.end());
     bcastSizeTensors.push_back(dimSizeTensor);
   }
+  std::reverse(bcastSizes.begin(), bcastSizes.end());
   std::reverse(bcastSizeTensors.begin(), bcastSizeTensors.end());
   return std::pair<Value, SmallVector<int64_t>>(
       rewriter.create<tensor::FromElementsOp>(op->getLoc(), bcastSizeTensors)
